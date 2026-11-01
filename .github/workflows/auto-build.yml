@@ -1,0 +1,68 @@
+name: Build and release Android port
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "base/**"
+      - "anubis-android-port.zip"
+      - "PORT_REVISION"
+      - "UPDATE_NAME"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Unpack the port files and add the official jar
+        run: |
+          test -f anubis-android-port.zip || { echo "::error::anubis-android-port.zip is missing from the repo root."; exit 1; }
+          ls base/*.jar >/dev/null 2>&1 || { echo "::error::Put the official Anubis jar in the base folder."; exit 1; }
+          rm -rf work
+          mkdir work
+          unzip -q anubis-android-port.zip -d work
+          mkdir -p work/base
+          cp base/*.jar work/base/
+          if [ -f PORT_REVISION ]; then cp PORT_REVISION work/PORT_REVISION; fi
+          if [ -f UPDATE_NAME ]; then cp UPDATE_NAME work/UPDATE_NAME; fi
+
+      - name: Build the jar
+        working-directory: work
+        run: python3 scripts/build.py
+
+      - name: Read version
+        id: meta
+        run: |
+          echo "version=$(cat work/dist/version.txt)" >> "$GITHUB_OUTPUT"
+          echo "title=$(cat work/dist/release-title.txt)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Anubis_${{ steps.meta.outputs.version }}
+          path: work/dist/*.jar
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TITLE: ${{ steps.meta.outputs.title }}
+        run: |
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Release v${VERSION} already exists. Change the number in the file PORT_REVISION (or upload a newer official jar), then push again."
+            exit 1
+          fi
+          gh release create "v${VERSION}" "work/dist/Anubis_${VERSION}.jar" \
+            --title "${TITLE}" \
+            --notes-file work/dist/release-notes.md \
+            --target "${GITHUB_SHA}"
